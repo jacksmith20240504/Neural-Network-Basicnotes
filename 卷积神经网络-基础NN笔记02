@@ -1,0 +1,94 @@
+import torch
+import torch.nn as nn
+import torch.optim as optim
+import torchvision
+import torchvision.transforms as transforms
+import matplotlib.pyplot as plt
+import numpy as np
+
+# 数据预处理
+transform = transforms.Compose([
+    transforms.ToTensor(),
+    transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))  # 将图片的像素值归一化到 [-1, 1]
+])
+
+# 加载CIFAR-10数据集
+trainset = torchvision.datasets.CIFAR10(root='./data', train=True, download=True, transform=transform)
+trainloader = torch.utils.data.DataLoader(trainset, batch_size=4, shuffle=True)
+
+testset = torchvision.datasets.CIFAR10(root='./data', train=False, download=True, transform=transform)
+testloader = torch.utils.data.DataLoader(testset, batch_size=4, shuffle=False)
+
+# CIFAR-10类别标签
+classes = ('plane', 'car', 'bird', 'cat', 'deer', 'dog', 'frog', 'horse', 'ship', 'truck')
+
+# 定义卷积神经网络
+class SimpleCNN(nn.Module):
+    def __init__(self):
+        super(SimpleCNN, self).__init__()
+        # 第一卷积层，输入通道为3（RGB图像），输出通道为6，卷积核大小为5x5
+        self.conv1 = nn.Conv2d(3, 6, 5)
+        self.pool = nn.MaxPool2d(2, 2)  # 2x2最大池化层
+        # 第二卷积层，输入通道为6，输出通道为16，卷积核大小为5x5
+        self.conv2 = nn.Conv2d(6, 16, 5)
+        # 全连接层
+        self.fc1 = nn.Linear(16 * 5 * 5, 120)
+        self.fc2 = nn.Linear(120, 84)
+        self.fc3 = nn.Linear(84, 10)
+
+    def forward(self, x):
+        x = self.pool(torch.relu(self.conv1(x)))  # 卷积1 + 池化
+        x = self.pool(torch.relu(self.conv2(x)))  # 卷积2 + 池化
+        x = x.view(-1, 16 * 5 * 5)  # 展平操作
+        x = torch.relu(self.fc1(x))
+        x = torch.relu(self.fc2(x))
+        x = self.fc3(x)
+        return x
+
+# 实例化模型
+net = SimpleCNN()
+
+# 定义损失函数和优化器
+criterion = nn.CrossEntropyLoss()
+optimizer = optim.SGD(net.parameters(), lr=0.001, momentum=0.9)
+
+# 训练网络
+for epoch in range(2):  # 训练2个epoch
+    running_loss = 0.0
+    for i, data in enumerate(trainloader, 0):
+        inputs, labels = data
+
+        optimizer.zero_grad()
+
+        outputs = net(inputs)
+        loss = criterion(outputs, labels)
+        loss.backward()
+        optimizer.step()
+
+        running_loss += loss.item()
+        if i % 1000 == 999:
+            print(f'[Epoch {epoch+1}, Batch {i+1}] loss: {running_loss / 1000:.3f}')
+            running_loss = 0.0
+
+print('Finished Training')
+
+# 从测试集中加载一些图像并进行可视化
+dataiter = iter(testloader)
+images, labels = next(dataiter)
+
+# 展示图片
+def imshow(img):
+    img = img * 0.5 + 0.5  # 正确的反归一化
+    npimg = img.numpy()
+    plt.imshow(np.transpose(npimg, (1, 2, 0)))
+    plt.show()
+
+
+imshow(torchvision.utils.make_grid(images))
+print('GroundTruth:', ' '.join(f'{classes[labels[j]]}' for j in range(4)))
+
+# 测试网络输出
+outputs = net(images)
+_, predicted = torch.max(outputs, 1)
+
+print('Predicted:', ' '.join(f'{classes[predicted[j]]}' for j in range(4)))
