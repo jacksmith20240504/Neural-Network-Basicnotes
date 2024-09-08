@@ -1,0 +1,103 @@
+from matplotlib import rcParams
+import torch
+import torch.nn as nn
+import torch.optim as optim
+import numpy as np
+import matplotlib.pyplot as plt
+import yfinance as yf
+
+# 设置 Matplotlib 中文字体支持
+rcParams['font.sans-serif'] = ['SimHei']  # 设置字体为SimHei
+rcParams['axes.unicode_minus'] = False  # 解决负号显示问题
+
+# 下载股票数据（以苹果股票为例）
+def download_stock_data(ticker, start_date, end_date):
+    data = yf.download(ticker, start=start_date, end=end_date)
+    return data['Close'].values
+
+# 数据标准化
+def normalize(data):
+    return (data - np.mean(data)) / np.std(data)
+
+# 准备数据：生成序列数据
+def create_sequences(data, seq_length):
+    sequences = []
+    labels = []
+    for i in range(len(data) - seq_length):
+        seq = data[i:i + seq_length]
+        label = data[i + seq_length]
+        sequences.append(seq)
+        labels.append(label)
+    return np.array(sequences), np.array(labels)
+
+# 定义RNN模型
+class StockPriceRNN(nn.Module):
+    def __init__(self, input_size=1, hidden_size=50, num_layers=2, output_size=1):
+        super(StockPriceRNN, self).__init__()
+        self.rnn = nn.RNN(input_size, hidden_size, num_layers, batch_first=True)
+        self.fc = nn.Linear(hidden_size, output_size)
+
+    def forward(self, x):
+        h0 = torch.zeros(2, x.size(0), 50)  # 初始化隐藏状态
+        out, _ = self.rnn(x, h0)
+        out = self.fc(out[:, -1, :])  # 取最后的时间步长的输出
+        return out
+
+# 下载数据并标准化
+ticker = 'AAPL'  # 苹果股票
+start_date = '2015-01-01'
+end_date = '2020-01-01'
+data = download_stock_data(ticker, start_date, end_date)
+data = normalize(data)
+
+# 设置超参数
+seq_length = 20
+train_size = int(len(data) * 0.8)
+
+# 划分训练集和测试集
+train_data = data[:train_size]
+test_data = data[train_size:]
+
+train_sequences, train_labels = create_sequences(train_data, seq_length)
+test_sequences, test_labels = create_sequences(test_data, seq_length)
+
+# 转换为张量
+train_sequences = torch.tensor(train_sequences, dtype=torch.float32).unsqueeze(-1)  # [batch_size, seq_length, features]
+train_labels = torch.tensor(train_labels, dtype=torch.float32)
+
+test_sequences = torch.tensor(test_sequences, dtype=torch.float32).unsqueeze(-1)
+test_labels = torch.tensor(test_labels, dtype=torch.float32)
+
+# 创建RNN模型
+model = StockPriceRNN()
+criterion = nn.MSELoss()
+optimizer = optim.Adam(model.parameters(), lr=0.001)
+
+# 训练模型
+epochs = 100
+for epoch in range(epochs):
+    model.train()
+    outputs = model(train_sequences)
+    loss = criterion(outputs.squeeze(), train_labels)
+    
+    optimizer.zero_grad()
+    loss.backward()
+    optimizer.step()
+    
+    if (epoch + 1) % 10 == 0:
+        print(f'Epoch [{epoch+1}/{epochs}], Loss: {loss.item():.4f}')
+
+# 测试模型
+model.eval()
+with torch.no_grad():
+    predictions = model(test_sequences).squeeze().numpy()
+
+# 可视化结果
+plt.figure(figsize=(10, 6))
+plt.plot(np.arange(len(data)), data, label='实际股票价格')
+plt.plot(np.arange(train_size + seq_length, len(data)), predictions, label='RNN 预测股票价格')
+plt.legend()
+plt.title(f'{ticker} 股票价格预测')
+plt.xlabel('Days')
+plt.ylabel('Normalized Price')
+plt.show()
