@@ -1,0 +1,117 @@
+import torch
+import torch.nn as nn
+import torch.optim as optim
+import numpy as np
+import matplotlib.pyplot as plt
+import yfinance as yf
+from sklearn.preprocessing import MinMaxScaler
+import matplotlib.font_manager as fm
+
+# 下载股票数据（以苹果股票为例）
+def download_stock_data(ticker, start_date, end_date):
+    data = yf.download(ticker, start=start_date, end=end_date)
+    return data['Close'].values.reshape(-1, 1)
+
+# 数据标准化
+scaler = MinMaxScaler(feature_range=(0, 1))
+
+# 准备数据：生成序列数据
+def create_sequences(data, seq_length):
+    sequences = []
+    labels = []
+    for i in range(len(data) - seq_length):
+        seq = data[i:i + seq_length]
+        label = data[i + seq_length]
+        sequences.append(seq)
+        labels.append(label)
+    return np.array(sequences), np.array(labels)
+
+# 修改 LSTM 模型结构
+class StockPriceLSTM(nn.Module):
+    def __init__(self, input_size=1, hidden_size=64, num_layers=2, output_size=1, dropout=0.2):
+        super(StockPriceLSTM, self).__init__()
+        self.lstm = nn.LSTM(input_size, hidden_size, num_layers, batch_first=True, dropout=dropout)
+        self.fc = nn.Linear(hidden_size, output_size)
+
+    def forward(self, x):
+        h0 = torch.zeros(self.lstm.num_layers, x.size(0), self.lstm.hidden_size).to(x.device)
+        c0 = torch.zeros(self.lstm.num_layers, x.size(0), self.lstm.hidden_size).to(x.device)
+        out, _ = self.lstm(x, (h0, c0))
+        out = self.fc(out[:, -1, :])
+        return out
+
+# 下载并标准化股票数据
+ticker = 'AAPL'  # 苹果股票
+start_date = '2015-01-01'
+end_date = '2020-01-01'
+data = download_stock_data(ticker, start_date, end_date)
+data = scaler.fit_transform(data)
+
+# 设置超参数
+seq_length = 20
+train_size = int(len(data) * 0.8)
+
+# 划分训练集和测试集
+train_data = data[:train_size]
+test_data = data[train_size:]
+
+train_sequences, train_labels = create_sequences(train_data, seq_length)
+test_sequences, test_labels = create_sequences(test_data, seq_length)
+
+# 转换为张量
+train_sequences = torch.tensor(train_sequences, dtype=torch.float32)
+train_labels = torch.tensor(train_labels, dtype=torch.float32)
+
+test_sequences = torch.tensor(test_sequences, dtype=torch.float32)
+test_labels = torch.tensor(test_labels, dtype=torch.float32)
+
+# 创建 LSTM 模型
+model = StockPriceLSTM(input_size=1, hidden_size=64, num_layers=2, output_size=1, dropout=0.2)
+criterion = nn.MSELoss()
+optimizer = optim.Adam(model.parameters(), lr=0.001)
+
+# 训练模型
+epochs = 200
+batch_size = 32
+for epoch in range(epochs):
+    model.train()
+    for i in range(0, len(train_sequences), batch_size):
+        batch_sequences = train_sequences[i:i+batch_size]
+        batch_labels = train_labels[i:i+batch_size]
+        
+        outputs = model(batch_sequences)
+        loss = criterion(outputs.squeeze(), batch_labels)
+        
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+    
+    if (epoch + 1) % 10 == 0:
+        print(f'Epoch [{epoch+1}/{epochs}], Loss: {loss.item():.4f}')
+
+# 测试模型
+model.eval()
+with torch.no_grad():
+    predictions = []
+    for i in range(0, len(test_sequences), batch_size):
+        batch_sequences = test_sequences[i:i+batch_size]
+        batch_predictions = model(batch_sequences).squeeze().numpy()
+        predictions.extend(batch_predictions)
+    predictions = np.array(predictions)
+
+# 反归一化预测数据
+predicted_prices = scaler.inverse_transform(predictions.reshape(-1, 1))
+actual_prices = scaler.inverse_transform(test_labels.numpy().reshape(-1, 1))
+
+# 可视化结果
+plt.rcParams['font.sans-serif'] = ['SimHei']
+plt.rcParams['axes.unicode_minus'] = False
+
+plt.figure(figsize=(10, 6))
+plt.plot(np.arange(len(actual_prices)), actual_prices, label='实际股票价格')
+plt.plot(np.arange(len(predicted_prices)), predicted_prices, label='LSTM预测股票价格')
+plt.legend()
+plt.title(f'{ticker} 股票价格预测（使用LSTM）')
+plt.xlabel('天数')
+plt.ylabel('价格')
+plt.show()
