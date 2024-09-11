@@ -1,0 +1,159 @@
+import torch
+import torch.nn as nn
+import torch.optim as optim
+import numpy as np
+import matplotlib.pyplot as plt
+import yfinance as yf
+from sklearn.preprocessing import MinMaxScaler
+from matplotlib import rcParams
+
+# 设置 Matplotlib 中文字体支持
+rcParams['font.sans-serif'] = ['SimHei']  # 设置字体为SimHei（黑体）
+rcParams['axes.unicode_minus'] = False  # 解决负号显示问题
+
+# 下载比特币价格数据
+def download_crypto_data(ticker, start_date, end_date):
+    data = yf.download(ticker, start=start_date, end=end_date)
+    return data['Close'].values.reshape(-1, 1)
+
+# 数据标准化
+scaler = MinMaxScaler(feature_range=(0, 1))
+
+# 准备数据：生成序列数据
+def create_sequences(data, seq_length):
+    sequences = []
+    labels = []
+    for i in range(len(data) - seq_length):
+        seq = data[i:i + seq_length]
+        label = data[i + seq_length]
+        sequences.append(seq)
+        labels.append(label)
+    return np.array(sequences), np.array(labels)
+
+# 修改 GRU 模型，添加 Dropout
+class CryptoPriceGRU(nn.Module):
+    def __init__(self, input_size=1, hidden_size=64, num_layers=2, output_size=1, dropout=0.2):
+        super(CryptoPriceGRU, self).__init__()
+        self.hidden_size = hidden_size
+        self.num_layers = num_layers
+        self.gru = nn.GRU(input_size, hidden_size, num_layers, batch_first=True, dropout=dropout)
+        self.fc = nn.Linear(hidden_size, output_size)
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, x):
+        h0 = torch.zeros(self.num_layers, x.size(0), self.hidden_size).to(x.device)
+        out, _ = self.gru(x, h0)
+        out = self.dropout(out[:, -1, :])
+        out = self.fc(out)
+        return out
+
+# 下载比特币数据并标准化
+ticker = 'BTC-USD'  # 比特币对美元汇率
+start_date = '2019-01-01'
+end_date = '2022-01-01'
+data = download_crypto_data(ticker, start_date, end_date)
+data = scaler.fit_transform(data)
+
+# 修改数据处理和训练过程
+seq_length = 30
+batch_size = 32
+train_size = int(len(data) * 0.7)  # 减少训练集比例
+
+# 添加验证集
+val_size = int(len(data) * 0.1)
+train_data = data[:train_size]
+val_data = data[train_size:train_size+val_size]
+test_data = data[train_size+val_size:]
+
+train_sequences, train_labels = create_sequences(train_data, seq_length)
+val_sequences, val_labels = create_sequences(val_data, seq_length)
+test_sequences, test_labels = create_sequences(test_data, seq_length)
+
+# 转换为张量
+train_sequences = torch.tensor(train_sequences, dtype=torch.float32)
+train_labels = torch.tensor(train_labels, dtype=torch.float32)
+val_sequences = torch.tensor(val_sequences, dtype=torch.float32)
+val_labels = torch.tensor(val_labels, dtype=torch.float32)
+test_sequences = torch.tensor(test_sequences, dtype=torch.float32)
+test_labels = torch.tensor(test_labels, dtype=torch.float32)
+
+# 创建数据加载器
+train_dataset = torch.utils.data.TensorDataset(train_sequences, train_labels)
+train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+val_dataset = torch.utils.data.TensorDataset(val_sequences, val_labels)
+val_loader = torch.utils.data.DataLoader(val_dataset, batch_size=batch_size)
+
+# 创建 GRU 模型
+model = CryptoPriceGRU(input_size=1, hidden_size=64, num_layers=2, output_size=1, dropout=0.2)
+criterion = nn.MSELoss()
+optimizer = optim.Adam(model.parameters(), lr=0.001, weight_decay=1e-5)  # 添加 L2 正则化
+
+# 训练模型
+epochs = 200  # 增加最大轮数
+best_val_loss = float('inf')
+patience = 20  # 增加耐心值
+no_improve = 0
+min_epochs = 50  # 设置最小训练轮数
+
+for epoch in range(epochs):
+    model.train()
+    total_loss = 0
+    for batch_sequences, batch_labels in train_loader:
+        outputs = model(batch_sequences)
+        loss = criterion(outputs.squeeze(), batch_labels.squeeze())
+        
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+        
+        total_loss += loss.item()
+    
+    # 验证
+    model.eval()
+    val_loss = 0
+    with torch.no_grad():
+        for batch_sequences, batch_labels in val_loader:
+            outputs = model(batch_sequences)
+            val_loss += criterion(outputs.squeeze(), batch_labels.squeeze()).item()
+    
+    val_loss /= len(val_loader)
+    
+    if (epoch + 1) % 10 == 0:
+        print(f'Epoch [{epoch+1}/{epochs}], Train Loss: {total_loss/len(train_loader):.4f}, Val Loss: {val_loss:.4f}')
+    
+    # 改进的早停
+    if val_loss < best_val_loss:
+        best_val_loss = val_loss
+        no_improve = 0
+        torch.save(model.state_dict(), 'best_model.pth')
+    else:
+        no_improve += 1
+        if no_improve == patience and epoch >= min_epochs:
+            print(f"Early stopping at epoch {epoch+1}")
+            break
+
+# 如果没有触发早停，打印训练完成信息
+else:
+    print(f"Training completed after {epochs} epochs")
+
+# 加载最佳模型
+model.load_state_dict(torch.load('best_model.pth', map_location=torch.device('cpu'), weights_only=True))
+
+# 测试模型
+model.eval()
+with torch.no_grad():
+    predictions = model(test_sequences).squeeze().numpy()
+
+# 反归一化预测数据
+predicted_prices = scaler.inverse_transform(predictions.reshape(-1, 1))
+actual_prices = scaler.inverse_transform(test_labels.numpy().reshape(-1, 1))
+
+# 可视化结果
+plt.figure(figsize=(10, 6))
+plt.plot(np.arange(len(actual_prices)), actual_prices, label='实际比特币价格')
+plt.plot(np.arange(len(predicted_prices)), predicted_prices, label='GRU预测比特币价格')
+plt.legend()
+plt.title(f'{ticker} 价格预测（使用GRU）')
+plt.xlabel('天数')
+plt.ylabel('价格')
+plt.show()
